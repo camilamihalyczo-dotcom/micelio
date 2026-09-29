@@ -1,0 +1,195 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Control Rítmico LED - Blanco & Celeste</title>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; text-align: center; background: #0b132b; color: #f8fafc; padding: 15px; margin: 0; }
+    .card { background: #1c2541; border-radius: 16px; padding: 20px; max-width: 400px; margin: 0 auto; box-shadow: 0 8px 25px rgba(0,0,0,0.5); }
+    h2 { margin-top: 0; font-size: 20px; color: #48cae4; }
+    button { background: #0077b6; color: #fff; border: none; padding: 12px 18px; margin: 6px 3px; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: 0.2s; }
+    button:disabled { background: #3a506b; color: #8d99ae; cursor: not-allowed; }
+    .panel { margin-top: 15px; border-top: 1px solid #3a506b; padding-top: 15px; text-align: left; }
+    .panel h3 { font-size: 15px; margin: 0 0 10px 0; color: #90e0ef; }
+    #indicadorBeat { width: 100%; height: 26px; border-radius: 8px; background: #0b132b; margin: 12px 0; border: 2px solid #3a506b; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 12px; transition: background 0.1s; }
+    .status { font-size: 13px; margin-bottom: 12px; color: #cbd5e1; }
+    input[type="range"] { width: 100%; margin: 8px 0; }
+    .color-preview { display: flex; justify-content: space-around; margin: 10px 0; }
+    .chip { padding: 5px 12px; border-radius: 20px; font-size: 12px; font-weight: bold; }
+  </style>
+</head>
+<body>
+
+  <div class="card">
+    <h2>Detector de Ritmo LED</h2>
+    <div class="status" id="estado">Estado: Desconectado</div>
+    <button id="btnConectar" style="width: 100%;">1. Conectar Tira LED</button>
+
+    <div class="panel">
+      <h3>Paso A: Protocolo</h3>
+      <select id="selectorModo" style="padding: 10px; width: 100%; border-radius: 8px; background: #0b132b; color: white; border: 1px solid #3a506b; margin-bottom: 10px;">
+        <option value="1">Protocolo 1 (7E 07... 9 bytes)</option>
+        <option value="2">Protocolo 2 (7E 04... 7 bytes)</option>
+        <option value="3">Protocolo 3 (FA 00... 7 bytes)</option>
+        <option value="4">Protocolo 4 (5B 05... Symphony)</option>
+      </select>
+      <div style="text-align: center;">
+        <button onclick="probarColor(255, 255, 255)">Test Blanco</button>
+        <button onclick="probarColor(0, 180, 255)">Test Celeste</button>
+        <button onclick="probarColor(0, 0, 0)">Apagar</button>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Paso B: Modo Ritmo Blanco / Celeste</h3>
+      
+      <div class="color-preview">
+        <span class="chip" style="background: #ffffff; color: #000;">Ritmo A: Blanco</span>
+        <span class="chip" style="background: #00b4d8; color: #000;">Ritmo B: Celeste</span>
+      </div>
+
+      <label style="font-size: 13px;">Sensibilidad al Golpe / Beat: <span id="valSens">1.4</span>x</label>
+      <input type="range" id="sliderSens" min="1.1" max="2.5" step="0.1" value="1.4">
+
+      <div id="indicadorBeat">ESPERANDO AUDIO</div>
+
+      <button id="btnAudio" style="width: 100%;" disabled>2. Iniciar Detección de Ritmo</button>
+    </div>
+  </div>
+
+  <script>
+    let caracteristicaEscritura = null;
+    let audioActivo = false;
+    let ultimoEnvio = 0;
+    let turnoColor = false;
+    let ultimoGolpe = 0;
+
+    const historialGraves = new Array(30).fill(20);
+    let indiceHistorial = 0;
+
+    const SERVICIO_UUID = 0xFFF0;
+    const CARACTERISTICA_UUID = 0xFFF3;
+
+    const COLOR_BLANCO  = { r: 255, g: 255, b: 255 };
+    const COLOR_CELESTE = { r: 0,   g: 180, b: 255 };
+    const COLOR_REPOSO  = { r: 0,   g: 15,  30  };
+
+    document.getElementById('sliderSens').addEventListener('input', (e) => {
+      document.getElementById('valSens').innerText = e.target.value;
+    });
+
+    document.getElementById('btnConectar').addEventListener('click', async () => {
+      try {
+        document.getElementById('estado').innerText = "Buscando tira...";
+        const device = await navigator.bluetooth.requestDevice({
+          filters: [{ name: 'GATT--DEMO' }],
+          optionalServices: [SERVICIO_UUID]
+        });
+
+        document.getElementById('estado').innerText = "Conectando...";
+        const server = await device.gatt.connect();
+        const service = await server.getPrimaryService(SERVICIO_UUID);
+        caracteristicaEscritura = await service.getCharacteristic(CARACTERISTICA_UUID);
+
+        document.getElementById('estado').innerHTML = "<b style='color:#48cae4;'>¡Conectado exitosamente!</b>";
+        document.getElementById('btnConectar').disabled = true;
+        document.getElementById('btnAudio').disabled = false;
+      } catch (err) {
+        document.getElementById('estado').innerHTML = "<b style='color:#ef4444;'>Error: " + err.message + "</b>";
+      }
+    });
+
+    async function enviarComandoRGB(r, g, b) {
+      if (!caracteristicaEscritura) return;
+      const modo = document.getElementById('selectorModo').value;
+      let paquete;
+
+      if (modo === "1") paquete = new Uint8Array([0x7e, 0x07, 0x05, 0x03, r, g, b, 0x00, 0xef]);
+      else if (modo === "2") paquete = new Uint8Array([0x7e, 0x04, 0x03, r, g, b, 0xef]);
+      else if (modo === "3") paquete = new Uint8Array([0xfa, 0x00, 0x00, r, g, b, 0xaf]);
+      else if (modo === "4") paquete = new Uint8Array([0x5b, 0x05, 0x03, r, g, b, 0x00, 0x5d]);
+
+      try {
+        await caracteristicaEscritura.writeValueWithoutResponse(paquete);
+      } catch (e) {
+        console.error("Error BLE:", e);
+      }
+    }
+
+    function probarColor(r, g, b) {
+      enviarComandoRGB(r, g, b);
+    }
+
+    document.getElementById('btnAudio').addEventListener('click', async () => {
+      if (audioActivo) return;
+
+      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const fuente = audioCtx.createMediaStreamSource(stream);
+      const analizador = audioCtx.createAnalyser();
+
+      analizador.fftSize = 256;
+      fuente.connect(analizador);
+
+      const buffer = new Uint8Array(analizador.frequencyBinCount);
+      audioActivo = true;
+      document.getElementById('btnAudio').innerText = "Ritmo Activo 🎵";
+      document.getElementById('btnAudio').style.background = "#00b4d8";
+
+      const ind = document.getElementById('indicadorBeat');
+
+      function analizar() {
+        requestAnimationFrame(analizar);
+        analizador.getByteFrequencyData(buffer);
+
+        let sumaGraves = 0;
+        for (let i = 1; i <= 6; i++) {
+          sumaGraves += buffer[i];
+        }
+        let energiaGravesActual = sumaGraves / 6;
+
+        let sumaPromedio = 0;
+        for (let i = 0; i < historialGraves.length; i++) sumaPromedio += historialGraves[i];
+        let energiaPromedio = sumaPromedio / historialGraves.length;
+
+        historialGraves[indiceHistorial] = energiaGravesActual;
+        indiceHistorial = (indiceHistorial + 1) % historialGraves.length;
+
+        const ahora = Date.now();
+        const factorSensibilidad = parseFloat(document.getElementById('sliderSens').value);
+
+        const esGolpe = (energiaGravesActual > energiaPromedio * factorSensibilidad) &&
+                        (energiaGravesActual > 45) &&
+                        (ahora - ultimoGolpe > 180);
+
+        if (esGolpe && (ahora - ultimoEnvio > 50)) {
+          ultimoGolpe = ahora;
+          turnoColor = !turnoColor;
+
+          if (turnoColor) {
+            ind.style.background = "#ffffff";
+            ind.style.color = "#000000";
+            ind.innerText = "¡GOLPE DE RITMO! (BLANCO)";
+            enviarComandoRGB(COLOR_BLANCO.r, COLOR_BLANCO.g, COLOR_BLANCO.b);
+          } else {
+            ind.style.background = "#00b4d8";
+            ind.style.color = "#000000";
+            ind.innerText = "¡GOLPE DE RITMO! (CELESTE)";
+            enviarComandoRGB(COLOR_CELESTE.r, COLOR_CELESTE.g, COLOR_CELESTE.b);
+          }
+          ultimoEnvio = ahora;
+        } else if (ahora - ultimoGolpe > 260 && ahora - ultimoEnvio > 80) {
+          ind.style.background = "#0b132b";
+          ind.style.color = "#ffffff";
+          ind.innerText = "ESCUCHANDO...";
+          enviarComandoRGB(COLOR_REPOSO.r, COLOR_REPOSO.g, COLOR_REPOSO.b);
+          ultimoEnvio = ahora;
+        }
+      }
+      analizar();
+    });
+  </script>
+</body>
+        </html>
+        
