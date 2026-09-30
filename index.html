@@ -68,6 +68,7 @@
     const historialGraves = new Array(30).fill(20);
     let indiceHistorial = 0;
 
+    // Servicios conocidos detectados en nRF Connect
     const SERVICIO_UUID = 0xFFF0;
     const CARACTERISTICA_UUID = 0xFFF3;
 
@@ -79,15 +80,22 @@
       document.getElementById('valSens').innerText = e.target.value;
     });
 
+    // Conexión universal BLE (sin filtro restrictivo por nombre)
     document.getElementById('btnConectar').addEventListener('click', async () => {
       try {
-        document.getElementById('estado').innerText = "Buscando tira...";
+        if (!navigator.bluetooth) {
+          alert("Tu navegador no soporta Web Bluetooth. Asegúrate de usar Google Chrome en Android o PC.");
+          return;
+        }
+
+        document.getElementById('estado').innerText = "Buscando dispositivos cercanos...";
+        
         const device = await navigator.bluetooth.requestDevice({
-          filters: [{ name: 'GATT--DEMO' }],
-          optionalServices: [SERVICIO_UUID]
+          acceptAllDevices: true,
+          optionalServices: [SERVICIO_UUID, 0xFF12, 0x1800, 0x1801]
         });
 
-        document.getElementById('estado').innerText = "Conectando...";
+        document.getElementById('estado').innerText = "Conectando a " + (device.name || "GATT--DEMO") + "...";
         const server = await device.gatt.connect();
         const service = await server.getPrimaryService(SERVICIO_UUID);
         caracteristicaEscritura = await service.getCharacteristic(CARACTERISTICA_UUID);
@@ -97,6 +105,7 @@
         document.getElementById('btnAudio').disabled = false;
       } catch (err) {
         document.getElementById('estado').innerHTML = "<b style='color:#ef4444;'>Error: " + err.message + "</b>";
+        console.error(err);
       }
     });
 
@@ -121,75 +130,79 @@
       enviarComandoRGB(r, g, b);
     }
 
+    // Procesamiento del micrófono del teléfono
     document.getElementById('btnAudio').addEventListener('click', async () => {
       if (audioActivo) return;
 
-      const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const fuente = audioCtx.createMediaStreamSource(stream);
-      const analizador = audioCtx.createAnalyser();
+      try {
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        const fuente = audioCtx.createMediaStreamSource(stream);
+        const analizador = audioCtx.createAnalyser();
 
-      analizador.fftSize = 256;
-      fuente.connect(analizador);
+        analizador.fftSize = 256;
+        fuente.connect(analizador);
 
-      const buffer = new Uint8Array(analizador.frequencyBinCount);
-      audioActivo = true;
-      document.getElementById('btnAudio').innerText = "Ritmo Activo 🎵";
-      document.getElementById('btnAudio').style.background = "#00b4d8";
+        const buffer = new Uint8Array(analizador.frequencyBinCount);
+        audioActivo = true;
+        document.getElementById('btnAudio').innerText = "Ritmo Activo 🎵";
+        document.getElementById('btnAudio').style.background = "#00b4d8";
 
-      const ind = document.getElementById('indicadorBeat');
+        const ind = document.getElementById('indicadorBeat');
 
-      function analizar() {
-        requestAnimationFrame(analizar);
-        analizador.getByteFrequencyData(buffer);
+        function analizar() {
+          requestAnimationFrame(analizar);
+          analizador.getByteFrequencyData(buffer);
 
-        let sumaGraves = 0;
-        for (let i = 1; i <= 6; i++) {
-          sumaGraves += buffer[i];
-        }
-        let energiaGravesActual = sumaGraves / 6;
-
-        let sumaPromedio = 0;
-        for (let i = 0; i < historialGraves.length; i++) sumaPromedio += historialGraves[i];
-        let energiaPromedio = sumaPromedio / historialGraves.length;
-
-        historialGraves[indiceHistorial] = energiaGravesActual;
-        indiceHistorial = (indiceHistorial + 1) % historialGraves.length;
-
-        const ahora = Date.now();
-        const factorSensibilidad = parseFloat(document.getElementById('sliderSens').value);
-
-        const esGolpe = (energiaGravesActual > energiaPromedio * factorSensibilidad) &&
-                        (energiaGravesActual > 45) &&
-                        (ahora - ultimoGolpe > 180);
-
-        if (esGolpe && (ahora - ultimoEnvio > 50)) {
-          ultimoGolpe = ahora;
-          turnoColor = !turnoColor;
-
-          if (turnoColor) {
-            ind.style.background = "#ffffff";
-            ind.style.color = "#000000";
-            ind.innerText = "¡GOLPE DE RITMO! (BLANCO)";
-            enviarComandoRGB(COLOR_BLANCO.r, COLOR_BLANCO.g, COLOR_BLANCO.b);
-          } else {
-            ind.style.background = "#00b4d8";
-            ind.style.color = "#000000";
-            ind.innerText = "¡GOLPE DE RITMO! (CELESTE)";
-            enviarComandoRGB(COLOR_CELESTE.r, COLOR_CELESTE.g, COLOR_CELESTE.b);
+          let sumaGraves = 0;
+          for (let i = 1; i <= 6; i++) {
+            sumaGraves += buffer[i];
           }
-          ultimoEnvio = ahora;
-        } else if (ahora - ultimoGolpe > 260 && ahora - ultimoEnvio > 80) {
-          ind.style.background = "#0b132b";
-          ind.style.color = "#ffffff";
-          ind.innerText = "ESCUCHANDO...";
-          enviarComandoRGB(COLOR_REPOSO.r, COLOR_REPOSO.g, COLOR_REPOSO.b);
-          ultimoEnvio = ahora;
+          let energiaGravesActual = sumaGraves / 6;
+
+          let sumaPromedio = 0;
+          for (let i = 0; i < historialGraves.length; i++) sumaPromedio += historialGraves[i];
+          let energiaPromedio = sumaPromedio / historialGraves.length;
+
+          historialGraves[indiceHistorial] = energiaGravesActual;
+          indiceHistorial = (indiceHistorial + 1) % historialGraves.length;
+
+          const ahora = Date.now();
+          const factorSensibilidad = parseFloat(document.getElementById('sliderSens').value);
+
+          const esGolpe = (energiaGravesActual > energiaPromedio * factorSensibilidad) &&
+                          (energiaGravesActual > 45) &&
+                          (ahora - ultimoGolpe > 180);
+
+          if (esGolpe && (ahora - ultimoEnvio > 50)) {
+            ultimoGolpe = ahora;
+            turnoColor = !turnoColor;
+
+            if (turnoColor) {
+              ind.style.background = "#ffffff";
+              ind.style.color = "#000000";
+              ind.innerText = "¡GOLPE DE RITMO! (BLANCO)";
+              enviarComandoRGB(COLOR_BLANCO.r, COLOR_BLANCO.g, COLOR_BLANCO.b);
+            } else {
+              ind.style.background = "#00b4d8";
+              ind.style.color = "#000000";
+              ind.innerText = "¡GOLPE DE RITMO! (CELESTE)";
+              enviarComandoRGB(COLOR_CELESTE.r, COLOR_CELESTE.g, COLOR_CELESTE.b);
+            }
+            ultimoEnvio = ahora;
+          } else if (ahora - ultimoGolpe > 260 && ahora - ultimoEnvio > 80) {
+            ind.style.background = "#0b132b";
+            ind.style.color = "#ffffff";
+            ind.innerText = "ESCUCHANDO...";
+            enviarComandoRGB(COLOR_REPOSO.r, COLOR_REPOSO.g, COLOR_REPOSO.b);
+            ultimoEnvio = ahora;
+          }
         }
+        analizar();
+      } catch (err) {
+        alert("Error al acceder al micrófono: " + err.message);
       }
-      analizar();
     });
   </script>
 </body>
-        </html>
-        
+</html>
